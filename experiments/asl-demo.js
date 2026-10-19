@@ -158,6 +158,8 @@ export default {
     session.ghostState.textContent = session.ghostOn ? "on" : "off";
     if (debugOn) debug = createDebug(el, { getModel: () => session.model, canSave: false });
     document.addEventListener("keydown", onKey);
+    // the platform's end-of-demo download button and its note are for researchers, not for this page
+    document.documentElement.classList.add("asl-demo");
     startOpenFS();
   },
 
@@ -224,6 +226,7 @@ export default {
   renderResults(summaries) {
     const got = summaries.filter((s) => s.correct).length;
     return `<p><strong>${got} of ${summaries.length} letters made.</strong></p>
+      <p><a class="demo-again" href="${location.href}">Practice again</a></p>
       <p class="subtle">Research prototype. Grading is approximate and based on public data — it can be wrong. Hands are read
       with MediaPipe (Google) and OpenFS (KETI), used here for non-commercial research. Nothing was saved.</p>`;
   },

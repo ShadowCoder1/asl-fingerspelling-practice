@@ -497,3 +497,5 @@
 .demo-chip-match { background: #22c55e; border-color: #14532d; }
 .demo-legend-list { list-style: none; padding: 0; }
 .demo-legend-list li { margin: 0.4rem 0; display: flex; gap: 0.5rem; align-items: center; }
+html.asl-demo #done-demo { display: none !important; }
+.demo-again { display: inline-block; padding: 0.55rem 1.2rem; border-radius: 10px; background: #1f2937; color: #fff; font-weight: 700; text-decoration: none; }
