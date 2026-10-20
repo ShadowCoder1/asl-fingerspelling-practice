@@ -113,18 +113,129 @@ async function lineArt(url, flip) {
   g.putImageData(d, 0, 0);
   return c;
 }
-function tinted(mask, color) {
+
+/* The picture SCHEMATIZED (Indranil, 19 Oct: "more of a schematized outline (no details like knuckles)", so that a
+ * right hand's skeleton sits inside it): a bold line round the OUTSIDE of the hand only -- the drawing filled in, cut
+ * at the wrist (no forearm), and its edge traced -- with the drawing's inside lines kept but faint (DETAIL_ALPHA), so a
+ * thumb across the palm still shows without the knuckles and nails competing with the outline. Pure, on alpha arrays;
+ * returns { outline, detail } (0-255 each). If the outline cannot be closed (the fill leaks out), the whole drawing
+ * comes back as the outline. */
+export const OUTLINE_PX = 7;        // the outline's width at RASTER
+export const DETAIL_ALPHA = 0.32;
+export function schematizeAlpha(alpha, w, h, { W, M }) {
+  const n = w * h;
+  const ux = W[0] - M[0], uy = W[1] - M[1], ul = Math.hypot(ux, uy) || 1;
+  const along = (x, y) => ((x - W[0]) * ux + (y - W[1]) * uy) / ul;     // > 0: past the wrist
+  const across = (x, y) => ((x - W[0]) * -uy + (y - W[1]) * ux) / ul;
+  const cut = 0.06 * ul;
+  const line = new Uint8Array(n);
+  let vmin = Infinity, vmax = -Infinity;
+  for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) {
+    const a = along(x, y);
+    if (alpha[i] > 110 && a <= cut) {
+      line[i] = 1;
+      if (a > cut - 0.08 * ul) { const v = across(x, y); vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
+    }
+  }
+  // close the hand across the wrist, between its outermost lines there
+  for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) {
+    const a = along(x, y), v = across(x, y);
+    if (a > cut - 2 && a <= cut + 1 && v >= vmin && v <= vmax) line[i] = 1;
+  }
+  // small gaps in the drawing closed (lines grown by 3 px), then everything reachable from the border is outside
+  const thick = dilate(line, w, h, 3);
+  const outside = new Uint8Array(n), stack = [];
+  const push = (i) => { if (!thick[i] && !outside[i]) { outside[i] = 1; stack.push(i); } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop(), x = i % w;
+    if (x > 0) push(i - 1);
+    if (x < w - 1) push(i + 1);
+    if (i >= w) push(i - w);
+    if (i < n - w) push(i + w);
+  }
+  let filled = 0;
+  for (let i = 0; i < n; i++) if (!outside[i]) filled++;
+  const outline = new Uint8ClampedArray(n), detail = new Uint8ClampedArray(n);
+  if (filled < 0.04 * n) {               // the fill leaked: give the drawing back as it is (minus the forearm)
+    for (let i = 0; i < n; i++) outline[i] = line[i] ? alpha[i] : 0;
+    return { outline, detail };
+  }
+  // the outline: the filled hand's own edge, OUTLINE_PX wide, on its inside
+  const near = dilate(outside, w, h, OUTLINE_PX);
+  for (let i = 0; i < n; i++) {
+    if (!outside[i] && near[i]) outline[i] = 255;
+    else if (line[i]) detail[i] = Math.round(alpha[i] * DETAIL_ALPHA);
+  }
+  return { outline, detail };
+}
+
+/* A binary image grown by r pixels (a square: a sliding maximum along rows, then columns). */
+function dilate(src, w, h, r) {
+  const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let count = 0;
+    for (let x = -r; x < w + r; x++) {
+      if (x + r < w && x + r >= 0) count += src[y * w + x + r];
+      if (x - r - 1 >= 0 && x - r - 1 < w) count -= src[y * w + x - r - 1];
+      if (x >= 0 && x < w) tmp[y * w + x] = count > 0 ? 1 : 0;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let count = 0;
+    for (let y = -r; y < h + r; y++) {
+      if (y + r < h && y + r >= 0) count += tmp[(y + r) * w + x];
+      if (y - r - 1 >= 0 && y - r - 1 < h) count -= tmp[(y - r - 1) * w + x];
+      if (y >= 0 && y < h) out[y * w + x] = count > 0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+function schematize(mask, pts) {
+  const g = mask.getContext("2d", { willReadFrequently: true });
+  const d = g.getImageData(0, 0, mask.width, mask.height);
+  const a = new Uint8ClampedArray(mask.width * mask.height);
+  for (let i = 0; i < a.length; i++) a[i] = d.data[4 * i + 3];
+  const { outline, detail } = schematizeAlpha(a, mask.width, mask.height, pts);
+  for (let i = 0; i < a.length; i++) d.data[4 * i + 3] = Math.max(outline[i], detail[i]);
+  g.putImageData(d, 0, 0);
+  return mask;
+}
+
+/* The line art in one colour with a soft dark edge BAKED IN (so white lines read on a white wall), made once per
+ * letter and colour: drawing a blur on every frame cost frames, and the tracker and the hold-still ring with them. */
+function baked(mask, color, edge) {
+  const t = document.createElement("canvas");
+  t.width = mask.width; t.height = mask.height;
+  const tg = t.getContext("2d");
+  tg.drawImage(mask, 0, 0);
+  tg.globalCompositeOperation = "source-in";
+  tg.fillStyle = color;
+  tg.fillRect(0, 0, t.width, t.height);
+  const pad = 8;
   const c = document.createElement("canvas");
-  c.width = mask.width; c.height = mask.height;
+  c.width = mask.width + 2 * pad; c.height = mask.height + 2 * pad;
   const g = c.getContext("2d");
-  g.drawImage(mask, 0, 0);
-  g.globalCompositeOperation = "source-in";
-  g.fillStyle = color;
-  g.fillRect(0, 0, c.width, c.height);
+  g.shadowColor = edge;
+  g.shadowBlur = 6;
+  g.drawImage(t, pad, pad);
+  g.shadowBlur = 0;
+  g.drawImage(t, pad, pad);
+  c.pad = pad;
   return c;
 }
 
+/** One letter's line art as the page draws it (for tools/ghost-hands/outlines.html): baked, white, on the canvas's side. */
+export async function letterArt(url, letter, points, hand = "right", style = "outline") {
+  let mask = await lineArt(url, canvasFlipped(letter, hand));
+  if (style === "outline") mask = schematize(mask, picturePoints(points, letter, hand));
+  return baked(mask, "#ffffff", "rgba(15, 23, 42, 0.85)");
+}
+
 export const LINE = Object.freeze({ neutral: "#ffffff", match: "#22c55e", turn: "#f59e0b" });
+const EDGE = Object.freeze({ neutral: "rgba(15, 23, 42, 0.85)", match: "rgba(20, 83, 45, 0.9)", turn: "rgba(15, 23, 42, 0.85)" });
 export const LINE_ALPHA = 0.92;
 const GOLD = { fill: "rgba(251, 191, 36, 0.9)", line: "rgba(146, 64, 14, 0.95)", glow: "rgba(245, 158, 11, 0.35)" };
 const PALM_FIT = [0, 1, 5, 9, 13, 17];
@@ -175,15 +286,17 @@ function fingerPath(ctx, pts) {
  * @param {{points: object, templates?: object, hand?: "right"|"left", smoothing?: number}} o
  *   templates: tutor/ghost-hands.json letters, for where the golden finger goes (none: the finger only glows)
  *   follow: put the picture on the hand instead of in its spot
+ *   style: "outline" (the picture schematized: schematizeAlpha) or "picture" (the whole drawing)
  */
-export function createPictureGhost({ points, templates = null, hand = "right", smoothing = 0.45, follow = false }) {
+export function createPictureGhost({ points, templates = null, hand = "right", smoothing = 0.45, follow = false, style = "outline" }) {
   const art = {};     // letter -> { neutral, match, turn } canvases
   let cur = null;     // where the picture is now: { x, y, th, k }
   return {
     async load(letters, pictureUrl) {
       await Promise.all([...new Set(letters)].filter((L) => points[L] && pictureUrl(L)).map(async (L) => {
-        const mask = await lineArt(pictureUrl(L), canvasFlipped(L, hand));
-        art[L] = { neutral: tinted(mask, LINE.neutral), match: tinted(mask, LINE.match), turn: tinted(mask, LINE.turn) };
+        let mask = await lineArt(pictureUrl(L), canvasFlipped(L, hand));
+        if (style === "outline") mask = schematize(mask, picturePoints(points, L, hand));
+        art[L] = { neutral: baked(mask, LINE.neutral, EDGE.neutral), match: baked(mask, LINE.match, EDGE.match), turn: baked(mask, LINE.turn, EDGE.turn) };
       }));
     },
     has: (L) => !!art[L],
@@ -245,10 +358,7 @@ export function createPictureGhost({ points, templates = null, hand = "right", s
       ctx.save();
       ctx.setTransform(t.a, t.b, t.c, t.d, t.e, t.f);
       ctx.globalAlpha = turned && !green ? 0.6 + 0.4 * pulse : LINE_ALPHA;
-      // a soft dark edge so white lines still read on a white wall
-      ctx.shadowColor = green ? "rgba(20, 83, 45, 0.9)" : "rgba(15, 23, 42, 0.8)";
-      ctx.shadowBlur = 3;
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, -img.pad, -img.pad);
       ctx.restore();
 
       if (gold) {

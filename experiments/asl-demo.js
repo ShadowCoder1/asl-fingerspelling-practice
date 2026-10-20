@@ -11,20 +11,21 @@
  * it can only run on the demo site or locally. No consent or questionnaire screens are shown by it either.
  *
  * URL: ?exp=asl-demo [&letters=BLYG...] (in that order; default A-Z) [&reps=n] (times through, default 1)
- *      [&hand=left] [&ghost=0] (start with the picture off) [&follow=1] (the picture on the hand, not in a spot) [&look=hand] [&dots=1] (the tracked hand's dots too) [&srcmirror=1] [&debug=1]
+ *      [&hand=left] [&ghost=0] (start with the outline off) [&follow=1] (on the hand, not in a spot) [&look=picture|hand]
+ *      [&dots=0] (hide the learner's skeleton) [&dots=1] (the tracked hand's dots too) [&srcmirror=1] [&debug=1]
  * Keys while practising: G shows or hides the ghost (to show the difference), N or -> skips to the next letter. */
 
 import { flattenRounded, DECIMALS } from "../tutor/landmarks.js";
 import { loadModel } from "../tutor/verifier.js";
 import { loadOpenFS } from "../tutor/openfs.js";
 import { LETTERS, pictureUrl } from "../tutor/letters.js";
-import { createEngine, EXPERT_COMMIT_OPTS } from "./asl-tutor/engine.js";
+import { createEngine, TUTOR_COMMIT_OPTS } from "./asl-tutor/engine.js";
 import { mountTutor } from "./asl-tutor/ui.js";
 import { createDebug } from "./asl-tutor/debug.js";
 import { createGhost } from "./asl-tutor/ghost.js";
 import { createPictureGhost } from "./asl-tutor/picture-ghost.js";
 import { createCoach } from "./asl-tutor/coach.js";
-import { createHandPicker } from "../tutor/pick-hand.js";
+import { createHandPicker, handSide } from "../tutor/pick-hand.js";
 import { configLooksUnfilled } from "../js/core/firebase.js";
 
 export const DEMO_VERSION = "asl-demo/1";
@@ -40,8 +41,8 @@ const OPENFS_WAIT_MS = 10000;
 export const LIVE_TEXT = Object.freeze({
   match: "That's it. Hold it still.",
   accepted: "",
-  neutral: "Put your hand into the picture.",
-  orientation: "Turn your hand to match the picture.",
+  neutral: "Put your hand inside the outline.",
+  orientation: "Turn your hand to match the outline.",
   spread: "Match the gaps between your fingers.",
   thumb: "Move your thumb where the gold one goes.",
   finger: (f) => `Move your ${f} finger where the gold one goes.`,
@@ -78,13 +79,15 @@ export const demoPlan = (letters, reps) => Array.from({ length: reps }, (_, r) =
 const params = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
 const HAND = params.get("hand") === "left" ? "left" : "right";
 const debugOn = params.get("debug") === "1";
-/* What sits on the hand: the letter's own picture (default; the owner, 19 Oct: the hand drawn from tracked points was
- * confusing) or ?look=hand, the outline of a real hand (experiments/asl-tutor/ghost.js). */
-const LOOK_STYLE = params.get("look") === "hand" ? "hand" : "picture";
+/* What is drawn for the hand to fit: the letter's picture SCHEMATIZED to its clean outline (default; Indranil, 19 Oct:
+ * "more of a schematized outline (no details like knuckles)", so a right hand's skeleton sits inside it); ?look=picture,
+ * the whole picture; ?look=hand, the outline of a real hand (experiments/asl-tutor/ghost.js). */
+const LOOK_STYLE = ["picture", "hand"].includes(params.get("look")) ? params.get("look") : "outline";
 // The picture stays in one spot for the hand to fit into (the owner, 19 Oct); ?follow=1 puts it on the hand instead.
 const FOLLOW = params.get("follow") === "1";
-// the learner's own tracked dots and lines: off, so the ghost is the only drawing on the hand (?dots=1 shows them)
-const DOTS = params.get("dots") === "1";
+// the learner's own tracked skeleton, to compare with the outline (Indranil, 19 Oct: "retain the hand skeleton");
+// ?dots=0 hides it
+const DOTS = params.get("dots") !== "0";
 
 let session = null, view = null, debug = null, mountError = null, picker = null;
 let openfsReady = null, openfsPromise = null;
@@ -105,6 +108,15 @@ export default {
     picker ??= createHandPicker(HAND);
     return picker(res, aspect);
   },
+  /* The camera check lets only the asked-for hand through (as the study's does). A camera that sends a mirror image
+   * makes a right hand look like a left one, and nothing would ever be accepted: so it also offers to flip it. */
+  handProblem(res, k, { aspect }) {
+    const side = handSide(res.landmarks[k], res.handedness?.[k], aspect);
+    const wrong = side && side !== HAND;
+    showFlipOffer(wrong);
+    return wrong ? `That looks like your ${side} hand. Please hold up your ${HAND} hand.` : null;
+  },
+
   maxTrials: (() => { try { return demoPlan(parseDemoLetters(params.get("letters")), parseDemoReps(params.get("reps"))).length; } catch { return 26; } })(),
   demographicQuestions: [],
   postQuestions: [],
@@ -118,7 +130,7 @@ export default {
       <li><span class="demo-chip demo-chip-fix"></span> A gold finger shows which finger to move, and where to.</li>
       <li><span class="demo-chip demo-chip-match"></span> Green: that's the letter. Hold still until the circle fills.</li>
     </ul>
-    <p class="subtle">Keys: <kbd>G</kbd> shows or hides the picture on your hand, <kbd>N</kbd> skips to the next letter. Nothing is recorded or saved.</p>`,
+    <p class="subtle">Keys: <kbd>G</kbd> shows or hides the outline, <kbd>N</kbd> skips to the next letter. Nothing is recorded or saved.</p>`,
 
   mount(el) {
     let letters = LETTERS.slice(), reps = 1;
@@ -150,9 +162,10 @@ export default {
     el.querySelector(".tutor-panel")?.insertAdjacentHTML("beforeend", `
       <div class="demo-legend" id="demo-legend">
         <span><span class="demo-chip demo-chip-neutral"></span>the shape to make</span>
+        <span><span class="demo-chip demo-chip-you"></span>your hand</span>
         <span><span class="demo-chip demo-chip-fix"></span>change this</span>
         <span><span class="demo-chip demo-chip-match"></span>that's it</span>
-        <span class="demo-keys"><kbd>G</kbd> picture <span id="demo-ghost-state">on</span> · <kbd>N</kbd> next letter</span>
+        <span class="demo-keys"><kbd>G</kbd> outline <span id="demo-ghost-state">on</span> · <kbd>N</kbd> next letter</span>
       </div>`);
     session.ghostState = el.querySelector("#demo-ghost-state");
     session.ghostState.textContent = session.ghostOn ? "on" : "off";
@@ -206,7 +219,7 @@ export default {
   draw(ctx, { landmarks, canvas, trial }) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (session?.ghostOn && session.ghost && trial) {
-      if (LOOK_STYLE === "picture" && session.picture.has(trial.letter)) {
+      if (LOOK_STYLE !== "hand" && session.picture.has(trial.letter)) {
         session.picture.draw(ctx, canvas, landmarks, trial.letter, session.look, performance.now());
       } else {
         session.ghost.draw(ctx, canvas, landmarks, trial.letter, HAND, 1, session.look, performance.now());
@@ -231,6 +244,25 @@ export default {
       with MediaPipe (Google) and OpenFS (KETI), used here for non-commercial research. Nothing was saved.</p>`;
   },
 };
+
+/* Under the camera check: "My camera shows me flipped", which reloads with ?srcmirror=1 (js/core/tracker.js) toggled. */
+let flipOffer = null;
+function showFlipOffer(on) {
+  if (typeof document === "undefined") return;
+  if (!flipOffer) {
+    const status = document.querySelector("#position-status");
+    if (!status) return;
+    flipOffer = document.createElement("p");
+    flipOffer.className = "demo-flip";
+    const q = new URLSearchParams(location.search);
+    const mirrored = q.get("srcmirror") === "1";
+    if (mirrored) q.delete("srcmirror"); else q.set("srcmirror", "1");
+    flipOffer.innerHTML = `Using your ${HAND} hand already? Your camera may flip the picture:
+      <a href="?${q.toString()}">${mirrored ? "undo the flip" : "fix it"}</a>.`;
+    status.after(flipOffer);
+  }
+  flipOffer.hidden = !on;
+}
 
 function onKey(e) {
   if (e.target?.closest?.("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -291,15 +323,18 @@ async function loadEverything() {
     get(PICTURES_PATH, "picture points")]);
   session.model = loadModel(model);
   session.ghost = createGhost(ghosts.letters);
-  session.picture = createPictureGhost({ points: pictures.letters, templates: ghosts.letters, hand: HAND, follow: FOLLOW });
-  if (LOOK_STYLE === "picture") await session.picture.load(session.letters, pictureUrl);
+  session.picture = createPictureGhost({ points: pictures.letters, templates: ghosts.letters, hand: HAND, follow: FOLLOW,
+    style: LOOK_STYLE === "picture" ? "picture" : "outline" });
+  if (LOOK_STYLE !== "hand") await session.picture.load(session.letters, pictureUrl);
   session.coach = createCoach(session.model, { hand: HAND });
   let timer;
   await Promise.race([startOpenFS(), new Promise((r) => { timer = setTimeout(r, OPENFS_WAIT_MS); })]);
   clearTimeout(timer);
-  // the expert ring: grades after 1.5 s still, so the learner has time to look at the ghost before the hold is taken
+  // EXACTLY the study's practice: its ring (0.9 s still), its grader, its hints. (The first demo used the expert ring,
+  // 1.5 s after a 0.5 s settle: on the same real footage it took 10 letters where the study's practice took 16, and
+  // Indranil and the owner both struggled to get to the next letter, 19 Oct.)
   session.engine = createEngine({ model: session.model, letters: session.letters, hintPolicy: "strict", gradeAll: true, hand: HAND,
-    commitOpts: EXPERT_COMMIT_OPTS, mix: { getOpenFS: () => openfsReady } });
+    commitOpts: TUTOR_COMMIT_OPTS, mix: { getOpenFS: () => openfsReady } });
 }
 
 function applyEffects(effects, { trial, addEvent, endTrial }) {
@@ -322,13 +357,14 @@ function applyEffects(effects, { trial, addEvent, endTrial }) {
 
 const BONES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
   [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
-/* The learner's tracked hand: thin white lines and small dots, over the ghost (js/core/experiment.js drawLandmarks
- * would clear the ghost away). */
+/* The learner's tracked hand: a sky-blue skeleton with white joints, over the outline, so the two can be told apart
+ * (js/core/experiment.js drawLandmarks would clear the outline away). */
 function drawHand(ctx, canvas, lm) {
   if (!lm || lm.length !== 21) return;
-  const W = canvas.width, H = canvas.height, s = Math.max(1.5, H / 360);
+  const W = canvas.width, H = canvas.height, s = Math.max(1.8, H / 300);
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,0.85)";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(56, 189, 248, 0.95)";
   ctx.lineWidth = s;
   ctx.beginPath();
   for (const [a, b] of BONES) { ctx.moveTo(lm[a].x * W, lm[a].y * H); ctx.lineTo(lm[b].x * W, lm[b].y * H); }
