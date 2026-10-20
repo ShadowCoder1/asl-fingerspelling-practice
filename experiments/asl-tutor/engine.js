@@ -200,7 +200,7 @@ export function createEngine({ model, letters, hintPolicy = "strict", commitOpts
    * clip) and the hold being graded, so the engine keeps both. */
   let clip = [];         // { tMs, flat } of every tracked frame this trial, oldest first
   let commitCtx = null;  // set only while flow.onCommit runs
-  if (mix) deps = { ...deps, verify: createMixedVerify({ verify, getOpenFS: mix.getOpenFS, getCommit: () => commitCtx }) };
+  if (mix) deps = { ...deps, verify: createMixedVerify({ verify, getOpenFS: mix.getOpenFS, getCommit: () => commitCtx, bThumb: !!mix.bThumb }) };
   let recent = [];       // { tMs, flat, label } for the motion letters and the hand vote
   let flow = null;
   let lastGraded = null;   // the points of the last pose graded in THIS trial
@@ -359,7 +359,7 @@ export function createEngine({ model, letters, hintPolicy = "strict", commitOpts
         const motion = MOTION_LETTERS.includes(letter)
           ? motionVerdict(letter, recent.filter((r) => r.tMs >= committed.tStart - motionParams.WINDOW_MS && r.tMs <= committed.tCommit), aspect, motionParams)
           : null;
-        commitCtx = mix ? { flat: committed.flat, aspect, tStart: committed.tStart, tCommit: committed.tCommit, clip } : null;
+        commitCtx = mix ? { flat: committed.flat, aspect, sign, tStart: committed.tStart, tCommit: committed.tCommit, clip } : null;
         try {
           route(flow.onCommit({ committed, x, quality, sign, samePose, motion, wrongHand }), tMs, effects);
         } finally {

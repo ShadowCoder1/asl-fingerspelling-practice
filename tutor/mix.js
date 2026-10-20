@@ -19,7 +19,7 @@
 
 import { letterColumn } from "./openfs.js";
 import { toPoints } from "./landmarks.js";
-import { palmSize } from "./hand-frame.js";
+import { palmSize, palmFrame, canonicalize } from "./hand-frame.js";
 import { sub, norm } from "./vec.js";
 
 export const SECOND_OPINION = Object.freeze({
@@ -32,6 +32,20 @@ export const SECOND_OPINION = Object.freeze({
 export const NOT_E = Object.freeze({
   minTipToKnuckle: 0.52,   // experts' E 0.19-0.48, O 0.41-0.95 (all but one 0.54+); chosen held out per person (o_vs_e.py)
 });
+/* 4. B THUMB RULE (demo only, opt-in { bThumb: true }; the owner, 19 Oct: "i had my hand fully open and it passed B").
+ *    B folds the thumb across the palm; an open hand sticks it out to the side, and the grader, which has no "open
+ *    hand" class, took one as a confident B (score 9.7 against a cut of -5.1). How far the thumb tip sits out to the
+ *    thumb side, in the hand's own frame (palm sizes; tutor/hand-frame.js palmFrame x): fluent signers' B -0.03
+ *    typical, 0.58 at most (22 signs); study 1's accepted practice B's 0.65 at most (654); that open hand 0.89. Over
+ *    B_THUMB.maxSideways, B is never accepted -- which changes none of those 676 signs. */
+export const B_THUMB = Object.freeze({ maxSideways: 0.7 });
+export function thumbSideways(flat, aspect, sign = 1) {
+  const Q = canonicalize(toPoints(flat, aspect), sign);
+  const { x, S } = palmFrame(Q);
+  if (!(S > 0)) return NaN;
+  const c = [0, 5, 9, 13, 17].reduce((a, i) => a.map((v, k) => v + Q[i][k] / 5), [0, 0, 0]);
+  return ((Q[4][0] - c[0]) * x[0] + (Q[4][1] - c[1]) * x[1] + (Q[4][2] - c[2]) * x[2]) / S;
+}
 const STATIC24 = "ABCDEFGHIKLMNOPQRSTUVWXY".split("");
 
 /** Does the middle finger point below horizontal on screen? (x scaled by the video's aspect; image y points down) */
@@ -90,7 +104,7 @@ export function openfsRead(openfs, clip, tStart, tCommit) {
  * by } where `by` names what decided an outcome that differs from the old grader's ("p-rule" | "o-e-rule" |
  * "second-opinion").
  */
-export function createMixedVerify({ verify, getOpenFS, getCommit }) {
+export function createMixedVerify({ verify, getOpenFS, getCommit, bThumb = false }) {
   return function mixedVerify(model, x, target, quality, opts) {
     const old = verify(model, x, target, quality, opts);
     const ctx = getCommit();
@@ -121,7 +135,12 @@ export function createMixedVerify({ verify, getOpenFS, getCommit }) {
         by = "second-opinion";
       }
     }
-    return { ...v, mix: { old: pick(old), pRule: pointsUp, tipToKnuckle: Number.isFinite(reach) ? reach : null, notE,
+    let thumbOut = null;
+    if (bThumb && target === "B" && v.outcome === "accept") {
+      thumbOut = thumbSideways(ctx.flat, ctx.aspect, ctx.sign ?? 1);
+      if (thumbOut > B_THUMB.maxSideways) { v = { ...v, outcome: "reject", reason: null, rival: null }; by = "b-thumb"; }
+    }
+    return { ...v, mix: { old: pick(old), pRule: pointsUp, tipToKnuckle: Number.isFinite(reach) ? reach : null, notE, thumbOut,
       openfs: read && { top: read.top, pTarget: read.p[target] ?? null }, by } };
   };
 }

@@ -326,7 +326,7 @@ async function loadEverything() {
   session.picture = createPictureGhost({ points: pictures.letters, templates: ghosts.letters, hand: HAND, follow: FOLLOW,
     style: LOOK_STYLE === "picture" ? "picture" : "outline" });
   if (LOOK_STYLE !== "hand") await session.picture.load(session.letters, pictureUrl);
-  session.coach = createCoach(session.model, { hand: HAND });
+  session.coach = createCoach(session.model, { hand: HAND, bThumb: true });
   let timer;
   await Promise.race([startOpenFS(), new Promise((r) => { timer = setTimeout(r, OPENFS_WAIT_MS); })]);
   clearTimeout(timer);
@@ -334,7 +334,7 @@ async function loadEverything() {
   // 1.5 s after a 0.5 s settle: on the same real footage it took 10 letters where the study's practice took 16, and
   // Indranil and the owner both struggled to get to the next letter, 19 Oct.)
   session.engine = createEngine({ model: session.model, letters: session.letters, hintPolicy: "strict", gradeAll: true, hand: HAND,
-    commitOpts: TUTOR_COMMIT_OPTS, mix: { getOpenFS: () => openfsReady } });
+    commitOpts: TUTOR_COMMIT_OPTS, mix: { getOpenFS: () => openfsReady, bThumb: true } });   // + the B thumb rule (tutor/mix.js)
 }
 
 function applyEffects(effects, { trial, addEvent, endTrial }) {

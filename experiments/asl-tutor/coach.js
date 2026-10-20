@@ -21,7 +21,7 @@ import { chirality, palmSize } from "../../tutor/hand-frame.js";
 import { featuresFromFlat } from "../../tutor/features.js";
 import { verify, standardize } from "../../tutor/verifier.js";
 import { chooseCorrection } from "../../tutor/blame.js";
-import { createMixedVerify, middleFingerDown, tipToKnuckle, NOT_E } from "../../tutor/mix.js";
+import { createMixedVerify, middleFingerDown, tipToKnuckle, NOT_E, thumbSideways, B_THUMB } from "../../tutor/mix.js";
 import { MOTION_LETTERS } from "../../tutor/motion.js";
 import { isCentered } from "./engine.js";
 
@@ -31,7 +31,7 @@ const HAND_SIGN = { right: 1, left: -1 };
 const FINGERS4 = ["index", "middle", "ring", "pinky"];
 
 /** What the grader and its blame say about one frame, for the ghost. Pure. */
-export function judgeFrame(model, { flat, aspect, videoHeight }, letter, hand = "right") {
+export function judgeFrame(model, { flat, aspect, videoHeight }, letter, hand = "right", { bThumb = false } = {}) {
   if (MOTION_LETTERS.includes(letter) || !(letter in model.index)) return { state: "neutral", blocks: [], why: "movement" };
   if (!flat || flat.some((v) => !Number.isFinite(v))) return { state: "neutral", blocks: [], why: "no-hand" };
   const points = toPoints(flat, aspect);
@@ -40,7 +40,7 @@ export function judgeFrame(model, { flat, aspect, videoHeight }, letter, hand = 
   const quality = {
     handPresentFrac: 1, palmSizePx: palmSize(points) * videoHeight, centered: isCentered(flat), chiralityMargin: chirality(points).margin,
   };
-  const mixed = createMixedVerify({ verify, getOpenFS: () => null, getCommit: () => ({ flat, aspect }) });
+  const mixed = createMixedVerify({ verify, getOpenFS: () => null, getCommit: () => ({ flat, aspect, sign }), bThumb });
   const v = mixed(model, x, letter, quality, { ignoreTier: true });
   if (v.outcome === "accept") return { state: "match", blocks: [] };
   if (v.reason === "tracking" || v.reason === "not-gradable") return { state: "neutral", blocks: [], why: v.reason };
@@ -51,6 +51,7 @@ export function judgeFrame(model, { flat, aspect, videoHeight }, letter, hand = 
     // the plain grader accepts it, one of mix.js's rules does not: say which way the rule points
     if (letter === "P" && !middleFingerDown(flat, aspect)) return { state: "fix", blocks: ["orientation"] };
     if (letter === "E" && tipToKnuckle(flat, aspect) >= NOT_E.minTipToKnuckle) return { state: "fix", blocks: FINGERS4 };
+    if (bThumb && letter === "B" && thumbSideways(flat, aspect, sign) > B_THUMB.maxSideways) return { state: "fix", blocks: ["thumb"] };
     return { state: "neutral", blocks: [], why: "rule" };
   }
   if (c.blocks.length) return { state: "fix", blocks: c.blocks.slice() };
@@ -78,7 +79,7 @@ export function medianFlat(rows) {
 
 /** One per session: judges the median of the last few frames and smooths the result over time. `accepted()` turns
  * the ghost green until the next trial. */
-export function createCoach(model, { hand = "right", settleMs = SETTLE_MS, matchSettleMs = MATCH_SETTLE_MS, window = WINDOW, windowMs = WINDOW_MS } = {}) {
+export function createCoach(model, { hand = "right", settleMs = SETTLE_MS, matchSettleMs = MATCH_SETTLE_MS, window = WINDOW, windowMs = WINDOW_MS, bThumb = false } = {}) {
   let shown = { state: "neutral", blocks: [] };
   let candidate = null, since = 0, done = false, recent = [];
   return {
@@ -95,7 +96,7 @@ export function createCoach(model, { hand = "right", settleMs = SETTLE_MS, match
         recent = [];
       }
       const flat = recent.length ? (recent.length === 1 ? recent[0].flat : medianFlat(recent.map((r) => r.flat))) : null;
-      const now = judgeFrame(model, { ...frame, flat }, letter, hand);
+      const now = judgeFrame(model, { ...frame, flat }, letter, hand, { bThumb });
       if (same(now, shown)) { candidate = null; return shown; }
       if (!candidate || !same(now, candidate)) { candidate = now; since = tMs; }
       if (tMs - since >= (now.state === "match" ? matchSettleMs : settleMs)) { shown = now; candidate = null; }
